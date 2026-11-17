@@ -127,7 +127,7 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
     <h2>A few things that help a lot</h2>
     <ul class="rules">
       <li>Use a phone with a working camera, prop it on something steady in <b>landscape</b>, and keep it still.</li>
-      <li><b>Please keep your face out of the picture.</b> The top edge of the frame should sit at your collarbone.</li>
+      <li><b>Please keep your face out of the picture.</b> The top edge of the frame should sit at your collarbone. For Eat, Drink and Water the hand is near the face, so you may tilt the phone up to fit your hand. Your face may then appear, but you never have to show it.</li>
       <li>Wear a <b>plain solid dark top</b> with no print. Remove watches, bracelets, threads and rings.</li>
       <li>Use a plain wall behind you and even light. Avoid a window or lamp that changes the light on your hands.</li>
       <li>Keep both hands fully inside the frame at the peak of every gesture.</li>
@@ -145,11 +145,11 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
         <select id="f-room"><option value="">Select</option><option>Plain wall, indoor</option><option>Plain backdrop or sheet</option><option>Cluttered background</option></select></div>
     </div>
     <label class="check"><input type="checkbox" id="c-acc"> I have removed watches, bracelets, threads and rings.</label>
-    <label class="check"><input type="checkbox" id="c-consent"> <span>I agree to take part. I understand that I have been asked to keep my face out of the photos, that my photos are labelled only with my signer code, that they will be used for sign and gesture recognition research, and that I can withdraw by contacting <span id="contactLine">the organiser</span>.</span></label>
+    <label class="check"><input type="checkbox" id="c-consent"> <span>I agree to take part. I understand that I have been asked to keep my face out of the photos except for the few gestures that are made near the face, that my photos are labelled only with my signer code, that they will be used for sign and gesture recognition research, and that I can withdraw by contacting <span id="contactLine">the organiser</span>.</span></label>
     <div class="errbox hidden" id="formErr"></div>
     <button class="btn primary" id="btnStart">Continue to camera setup</button>
   </div>
-  <p class="note">Your privacy: please keep your face out of the pictures, and know that your photos stay on your phone until you download the zip at the end and send it to the organiser. This page uploads nothing.</p>
+  <p class="note">Your privacy: please keep your face out of the pictures except where the page says it is allowed, and know that your photos stay on your phone until you download the zip at the end and send it to the organiser. This page uploads nothing.</p>
 </section>
 
 <!-- CLASS -->
@@ -237,6 +237,7 @@ const CFG = {
   videoW: 1280, videoH: 720, jpegQuality: 0.92,
   blurMin: 35,                   // Laplacian variance on a 320px grey copy, tune in the pilot
   faceScoreMin: 0.45,
+  faceAllowedClasses: [25,26,27],   // Eat, Drink, Water: gestures made near the face, so a face in the frame is accepted
   lumaMin: 60, lumaMax: 205,
   maxAttempts: 3,
   breakAfter: 17,                // classes before the mid-session break
@@ -455,6 +456,7 @@ function analyse(cls, frames){
     const ph=PHASES[i]; let d={hands:0,faces:0}; try{ d=detect(cv); }catch(e){ reasons.push("Detector error, reload the page"); }
     const m=metrics(cv);
     rows.push({phase:ph, hands:d.hands, faces:d.faces, sharp:m.sharp, luma:m.luma, w:cv.width, h:cv.height});
+    if(d.faces>0 && !CFG.faceAllowedClasses.includes(cls.id)) reasons.push("Your face is in the picture. For this gesture please keep it out: tilt the phone down so the top of the frame sits at your collarbone.");
     if(cls.hands>0 && CFG.requireHands[ph] && d.hands===0) reasons.push(`No hand was found in the ${ph} frame. Keep your hands inside the frame.`);
     if(CFG.requireHands[ph] && m.sharp<CFG.blurMin) reasons.push(`The ${ph} frame was blurry. Hold still and check the light.`);
     if(m.luma<CFG.lumaMin) reasons.push(`The ${ph} frame was too dark.`);
@@ -527,7 +529,7 @@ function renderClass(){
   $("#cl-chart").src=IMGS[cls.id];
   $("#cl-note").textContent = cls.hands===0
     ? "Rest your hands or move them naturally, for example clasped or resting, but never make any gesture from the list. Take a different relaxed pose in each repetition."
-    : "Panel 1 is the start, panel 2 is the peak, panel 3 is the end. You will hear three beeps, about 2.4 seconds apart: be at the start, the peak and the end on those beeps. Keep both hands inside the frame and your face out of it, please.";
+    : "Panel 1 is the start, panel 2 is the peak, panel 3 is the end. You will hear three beeps, about 2.4 seconds apart: be at the start, the peak and the end on those beeps. Keep both hands inside the frame."+(CFG.faceAllowedClasses.includes(cls.id)?" This gesture is made near the face, so tilt the phone up just enough to keep your whole hand in the frame. You do not have to show your face. It is fine if the frame starts at your nose or chin, and it is also fine if your face is visible.":" Keep your face out of the frame, please.");
   $("#btnCapture").textContent = classRepsDone(cls)>0 ? "Continue capture" : "Start capture";
   $("#crumb").textContent=`Signer ${S.meta.code}`;
   show("class");
