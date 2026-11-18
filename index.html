@@ -56,6 +56,10 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
 .tag{display:inline-block;padding:3px 9px;border-radius:99px;font-size:.78rem;border:1px solid var(--line);color:var(--muted)}
 .tag.two{color:var(--warn);border-color:#e8cf9c;background:#fbf3e1}
 .tag.one{color:var(--accent);border-color:#ecc7b0;background:#fbeee6}
+.tag.faceok{color:#2f6f50;border-color:#b9dccb;background:#e8f5ee;font-weight:600}
+.tag.faceno{color:#8a4b1a;border-color:#e8cf9c;background:#fbf3e1}
+.repinfo .ftag{display:block;margin-top:3px;font-size:.78rem;font-weight:600;color:#9be0bd}
+.repinfo .ftag.no{color:#f2b84b}
 .cname{font-family:var(--serif);font-size:1.7rem;font-weight:600;margin:2px 0 10px}
 .note{color:var(--muted);font-size:.88rem;line-height:1.45}
 .warnbox{border:1px solid #ecd49c;background:#fbf3df;color:#6b4a0a;border-radius:12px;padding:12px 14px;font-size:.9rem;line-height:1.45;margin-bottom:14px}
@@ -159,7 +163,7 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
   <div class="meta"><span id="cl-pos"></span><span id="cl-total"></span></div>
   <div class="progress"><i id="cl-bar"></i></div>
   <div class="card">
-    <div class="row" style="margin-bottom:6px"><span class="tag" id="cl-hands"></span><span class="tag" id="cl-reps"></span></div>
+    <div class="row" style="margin-bottom:6px"><span class="tag" id="cl-hands"></span><span class="tag" id="cl-reps"></span><span class="tag" id="cl-face"></span></div>
     <div class="cname" id="cl-name"></div>
     <img class="chart" id="cl-chart" alt="Reference chart">
     <p class="note" style="margin-top:10px" id="cl-note"></p>
@@ -239,9 +243,12 @@ const CFG = {
   videoW: 1280, videoH: 720, jpegQuality: 0.92,
   blurMin: 35,                   // Laplacian variance on a 320px grey copy, tune in the pilot
   faceScoreMin: 0.45,
+  faceRejectScore: 0.80,            // a face only counts if the detector is at least this sure
+  faceMinWidthFrac: 0.10,           // and the face box is at least this fraction of the frame width
   faceAllowedClasses: [25,26,27],   // Eat, Drink, Water: gestures made near the face, so a face in the frame is accepted
   lumaMin: 60, lumaMax: 205,
   maxAttempts: 3,
+  allowSkip: false,                 // false: a repetition cannot be skipped, the person must retake until all 3 photos pass
   breakAfter: 17,                // classes before the mid-session break
   requireHands: { start: false, peak: true, end: true },
   visionModule: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs",
@@ -359,7 +366,16 @@ async function loadModels(onMsg){
 }
 function detect(src){
   const h = S.hand.detect(src); const f = S.face.detect(src);
-  return { hands: h.landmarks ? h.landmarks.length : 0, faces: f.detections ? f.detections.length : 0 };
+  const sw = src.videoWidth || src.width || 1;
+  let best = 0;
+  const real = (f.detections||[]).filter(d=>{
+    const sc = d.categories && d.categories[0] ? d.categories[0].score : 1;
+    const wf = d.boundingBox ? d.boundingBox.width / sw : 1;
+    const ok = sc >= CFG.faceRejectScore && wf >= CFG.faceMinWidthFrac;
+    if(ok && sc>best) best=sc;
+    return ok;
+  });
+  return { hands: h.landmarks ? h.landmarks.length : 0, faces: real.length, faceScore: best };
 }
 
 /* ===================== Image metrics ===================== */
@@ -458,7 +474,7 @@ function analyse(cls, frames){
     const ph=PHASES[i]; let d={hands:0,faces:0}; try{ d=detect(cv); }catch(e){ reasons.push("Detector error, reload the page"); }
     const m=metrics(cv);
     rows.push({phase:ph, hands:d.hands, faces:d.faces, sharp:m.sharp, luma:m.luma, w:cv.width, h:cv.height});
-    if(d.faces>0 && !CFG.faceAllowedClasses.includes(cls.id)) reasons.push("Your face is in the picture. For this gesture please keep it out: tilt the phone down so the top of the frame sits at your collarbone.");
+    if(d.faces>0 && !CFG.faceAllowedClasses.includes(cls.id)) reasons.push("Your face is in the picture (face check "+Math.round((d.faceScore||0)*100)+"%). For this gesture please keep it out: tilt the phone down so the top of the frame sits at your collarbone.");
     if(cls.hands>0 && CFG.requireHands[ph] && d.hands===0) reasons.push(`No hand was found in the ${ph} frame. Keep your hands inside the frame.`);
     if(CFG.requireHands[ph] && m.sharp<CFG.blurMin) reasons.push(`The ${ph} frame was blurry. Hold still and check the light.`);
     if(m.luma<CFG.lumaMin) reasons.push(`The ${ph} frame was too dark.`);
@@ -478,12 +494,13 @@ function classDone(cls){ for(let r=1;r<=CFG.reps;r++) if(!repResolved(cls,r)) re
 function totalSaved(){ return S.saved.size; }
 async function saveMeta(){ await DB.put("meta","session",S.meta); }
 
+function faceTag(cls){ const fo=CFG.faceAllowedClasses.includes(cls.id)&&cls.hands!==0; return fo?'<span class="ftag">For this gesture your face is allowed</span>':'<span class="ftag no">Keep your face out of the frame</span>'; }
 async function captureRep(cls, rep){
   let attempts=0;
   while(true){
     attempts++; S.aborted=false; S.busy=true;
     hideResult(); clearHud();
-    $("#repinfo").innerHTML=`<b>${cls.name.replace(/_/g," ")}</b>Repetition ${rep} of ${CFG.reps}`;
+    $("#repinfo").innerHTML=`<b>${cls.name.replace(/_/g," ")}</b>Repetition ${rep} of ${CFG.reps}${faceTag(cls)}`;
     $("#mini").src=IMGS[cls.id]; $("#mini").style.display="block";
     const ok1 = await countdown(); if(!ok1){ S.busy=false; return "abort"; }
     const frames = await sequence(true, cls); if(!frames){ S.busy=false; return "abort"; }
@@ -504,8 +521,9 @@ async function captureRep(cls, rep){
     } else {
       S.meta.rejects.push({cls:cls.id, rep, attempt:attempts, ts:new Date().toISOString(), reasons:res.reasons, rows:log}); await saveMeta();
       S.busy=false; frames.length=0;
-      const canSkip = attempts>=CFG.maxAttempts;
-      showResult(`<h2>Let us try that once more</h2><ul>${res.reasons.map(r=>`<li>${r}</li>`).join("")}</ul>
+      const canSkip = CFG.allowSkip && attempts>=CFG.maxAttempts;
+      const stuck = !CFG.allowSkip && attempts>=CFG.maxAttempts;
+      showResult(`<h2>Let us try that once more</h2><ul>${res.reasons.map(r=>`<li>${r}</li>`).join("")}</ul>${stuck?'<p class="note">Still not passing? Check that the light is even, both hands are fully in the frame, the phone is steady and your face is out of the frame. If it keeps failing, take a screenshot of this message and send it to the organiser.</p>':""}
         <div class="row"><button class="btn primary" id="rRetry">Retake</button>${canSkip?'<button class="btn" id="rSkip">Skip this repetition</button>':""}<button class="btn right" id="rBack">Back</button></div>`, true);
       const choice = await waitClick([[$("#rRetry"),"retry"],[$("#rBack"),"back"],...(canSkip?[[$("#rSkip"),"skip"]]:[])]);
       hideResult();
@@ -528,6 +546,7 @@ function renderClass(){
   $("#cl-name").textContent=cls.name.replace(/_/g," ");
   const ht=$("#cl-hands"); ht.textContent = cls.hands===0?"No gesture":cls.hands===1?"One hand":"Two hands"; ht.className="tag "+(cls.hands===2?"two":"one");
   $("#cl-reps").textContent=`${classRepsDone(cls)} of ${CFG.reps} repetitions done`;
+  const fo=CFG.faceAllowedClasses.includes(cls.id), ft=$("#cl-face"); ft.textContent = cls.hands===0 ? "Keep your face out" : fo ? "For this gesture your face is allowed" : "Keep your face out of the frame"; ft.className="tag "+(fo&&cls.hands!==0?"faceok":"faceno");
   $("#cl-chart").src=IMGS[cls.id];
   $("#cl-note").textContent = cls.hands===0
     ? "Rest your hands or move them naturally, for example clasped or resting, but never make any gesture from the list. Take a different relaxed pose in each repetition."
@@ -573,7 +592,7 @@ async function runPractice(){
   const cls=currentClass(); S.aborted=false;
   try{ await openCamera("capture"); }catch(e){ toast("Camera error: "+e.message, 4000); return renderClass(); }
   S.live=false; clearHud();
-  $("#repinfo").innerHTML=`<b>${cls.name.replace(/_/g," ")}</b>Practice, no photos saved`;
+  $("#repinfo").innerHTML=`<b>${cls.name.replace(/_/g," ")}</b>Practice, no photos saved${faceTag(cls)}`;
   $("#mini").src=IMGS[cls.id]; $("#mini").style.display="block";
   $("#ctrl").innerHTML=`<button class="btn danger" id="btnCancel">Stop practice</button>`;
   $("#btnCancel").onclick=()=>{ S.aborted=true; };
