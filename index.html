@@ -176,7 +176,6 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
     <button class="btn" id="btnPractice">Practice without photos</button>
     <button class="btn primary right" id="btnCapture">Start capture</button>
   </div>
-  <div class="row" style="margin-top:10px"><button class="btn danger" id="btnTestEnd">TEST ONLY: Go to finish and send</button></div>
 </section>
 
 <!-- BREAK -->
@@ -822,7 +821,6 @@ async function boot(){
   $("#btnBreakDone").onclick=()=>renderClass();
   $("#btnZip").onclick=downloadZip;
   $("#btnSend").onclick=sendToOrganiser;
-  $("#btnTestEnd").onclick=()=>renderFinish();
   $("#btnClear").onclick=async()=>{ if(confirm("Delete all photos from this phone? Only do this after the organiser has confirmed the zip arrived.")){ await DB.clear("frames"); await DB.clear("meta"); S.meta=null; S.saved=new Set(); location.reload(); } };
   addEventListener("visibilitychange",()=>{ if(document.hidden) S.aborted=true; });
   window.__S=S; if(MOCK){ window.__renderFinish=renderFinish; window.__CFG=CFG; } window.__ready=true;
