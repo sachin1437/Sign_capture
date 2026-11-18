@@ -151,11 +151,11 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
         <select id="f-room"><option value="">Select</option><option>Plain wall, indoor</option><option>Plain backdrop or sheet</option><option>Cluttered background</option></select></div>
     </div>
     <label class="check"><input type="checkbox" id="c-acc"> I have removed watches, bracelets, threads and rings.</label>
-    <label class="check"><input type="checkbox" id="c-consent"> <span>I agree to take part. I understand that I have been asked to keep my face out of the photos except for the few gestures that are made near the face, that my photos are labelled only with my signer code, that they will be used for sign and gesture recognition research, and that I can withdraw by contacting <span id="contactLine">the organiser</span>.</span></label>
+    <label class="check"><input type="checkbox" id="c-consent"> <span>I agree to take part. I understand that I have been asked to keep my face out of the photos except for the few gestures that are made near the face, that my photos are labelled only with my signer code, that I will send them to the organiser at the end, that they will be used for sign and gesture recognition research, and that I can withdraw by contacting <span id="contactLine">the organiser</span>.</span></label>
     <div class="errbox hidden" id="formErr"></div>
     <button class="btn primary" id="btnStart">Continue to camera setup</button>
   </div>
-  <p class="note">Your privacy: please keep your face out of the pictures except where the page says it is allowed, and know that your photos stay on your phone until you download the zip at the end and send it to the organiser. This page uploads nothing.</p>
+  <p class="note">Your privacy: please keep your face out of the pictures except where the page says it is allowed, and know that your photos stay on your phone until you tap Send at the end. Nothing is uploaded before that.</p>
 </section>
 
 <!-- CLASS -->
@@ -185,9 +185,18 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
 <!-- FINISH -->
 <section class="screen" id="s-finish">
   <h1>All done, thank you</h1>
-  <p class="lead">Your contribution makes this research possible. Please download the zip and send it to the organiser by Google Drive or email. Avoid WhatsApp, because it compresses images and spoils the quality.</p>
+  <p class="lead">Your contribution makes this research possible. <span id="finLead">Please download the zip and send it to the organiser by Google Drive or email. Avoid WhatsApp, because it compresses images and spoils the quality.</span></p>
   <div class="card"><div class="stat" id="finStats"></div></div>
   <div class="warnbox hidden" id="finWarn"></div>
+  <div class="card hidden" id="sendBox">
+    <h2 style="margin-top:0">Send your photos to the organiser</h2>
+    <p class="note">Tap the button and keep this page open until it says sent. It can take a few minutes. If it stops, tap again and it carries on where it stopped.</p>
+    <label class="note" for="sendMsg" style="display:block;margin-top:8px">Message for the organiser (optional)</label>
+    <textarea id="sendMsg" rows="2" maxlength="400" style="width:100%;margin:4px 0 10px;padding:10px;border-radius:10px;border:1px solid var(--line);font:inherit"></textarea>
+    <div style="height:8px;background:var(--line);border-radius:99px;overflow:hidden"><div id="sendBar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div>
+    <p class="note" id="sendStatus" style="margin:8px 0">Not sent yet.</p>
+    <button class="btn primary" id="btnSend">Send to the organiser</button>
+  </div>
   <div class="row">
     <button class="btn good" id="btnZip">Download zip</button>
     <button class="btn danger right" id="btnClear">Delete data from this phone</button>
@@ -248,6 +257,8 @@ const CFG = {
   faceAllowedClasses: [25,26,27],   // Eat, Drink, Water: gestures made near the face, so a face in the frame is accepted
   lumaMin: 60, lumaMax: 205,
   maxAttempts: 3,
+  uploadUrl: "https://script.google.com/macros/s/AKfycbykbDC4Mt3BMaNqu0BWx3iT_bHyelvNQ4jE4uHdfQgnkmo-2A5xhDPd66X-tIEMJi85ww/exec",                  // Google Apps Script web app URL (ends in /exec). Empty hides the send button.
+  uploadBatchFiles: 6, uploadBatchBytes: 1500000,
   allowSkip: false,                 // false: a repetition cannot be skipped, the person must retake until all 3 photos pass
   breakAfter: 17,                // classes before the mid-session break
   requireHands: { start: false, peak: true, end: true },
@@ -615,13 +626,67 @@ async function renderFinish(){
   $("#finStats").innerHTML=`<div><b>${n}</b><span>photos saved</span></div><div><b>${rej}</b><span>retakes needed</span></div><div><b>${skip}</b><span>repetitions skipped</span></div>`;
   const w=$("#finWarn");
   if(incomplete.length){ w.classList.remove("hidden"); w.textContent="Some gestures have fewer photos than expected: "+incomplete.map(x=>`${x.c.name} (${x.k}/${CFG.reps*3})`).join(", ")+"."; } else w.classList.add("hidden");
+  const hasUp=!!CFG.uploadUrl; $("#sendBox").classList.toggle("hidden",!hasUp);
+  if(hasUp){ $("#finLead").textContent="Please tap the send button below. If it does not work, download the zip instead and send it to the organiser by Google Drive or email. Avoid WhatsApp, because it compresses images."; if(S.meta.sentAt){ $("#sendStatus").textContent="Sent. Thank you, the organiser has your photos."; $("#sendBar").style.width="100%"; $("#btnSend").textContent="Send again"; } }
   $("#crumb").textContent=`Signer ${S.meta.code}`; show("finish");
 }
-async function buildZip(){
+
+/* ===================== Send to organiser ===================== */
+function b64(buf){ const u=new Uint8Array(buf); let out=""; for(let i=0;i<u.length;i+=0x8000) out+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000)); return btoa(out); }
+async function postChunk(payload){
+  let last="";
+  for(let a=0;a<4;a++){
+    try{
+      const r=await fetch(CFG.uploadUrl,{method:"POST",body:JSON.stringify(payload),redirect:"follow"});
+      const j=await r.json();
+      if(j&&j.ok) return j;
+      last=(j&&j.error)||"The server refused the upload";
+      if(last==="key") throw new Error("Your access key was not accepted by the server.");
+    }catch(e){ last=e.message||String(e); if(/access key/.test(last)) throw e; }
+    await sleep(MOCK?50:1500*(a+1));
+  }
+  throw new Error(last||"Network problem");
+}
+let SENDING=false;
+async function sendToOrganiser(){
+  if(SENDING||!CFG.uploadUrl) return; SENDING=true;
+  const btn=$("#btnSend"), st=$("#sendStatus"), bar=$("#sendBar"); btn.disabled=true;
+  try{
+    const {rows,manifest,csv}=await buildPackage(); const done=new Set(S.meta.uploaded||[]);
+    const items=[{p:`${S.meta.code}/manifest.json`,t:"application/json",text:JSON.stringify(manifest,null,2)},{p:`${S.meta.code}/frames.csv`,t:"text/csv",text:csv}];
+    rows.forEach(([k,v])=>items.push({p:k,t:"image/jpeg",blob:v.blob}));
+    const total=items.length; const todo=items.filter(x=>!done.has(x.p));
+    bar.style.width=(100*(total-todo.length)/total)+"%"; st.textContent=`Sending... ${total-todo.length} of ${total} files`;
+    let batch=[], bytes=0, sent=total-todo.length;
+    const flush=async(final)=>{
+      const payload={k:S.meta.accessKey,code:S.meta.code,sid:S.meta.sessionId,files:batch.map(x=>x.f),final:!!final};
+      if(final){ payload.message=($("#sendMsg").value||"").slice(0,400); payload.phone=S.meta.info.phone; payload.expected=total; }
+      await postChunk(payload);
+      batch.forEach(x=>{ done.add(x.p); }); sent+=batch.length; S.meta.uploaded=[...done]; await saveMeta();
+      bar.style.width=(100*sent/total)+"%"; st.textContent=`Sending... ${sent} of ${total} files`; batch=[]; bytes=0;
+    };
+    for(const it of todo){
+      const buf = it.blob ? await it.blob.arrayBuffer() : new TextEncoder().encode(it.text).buffer;
+      batch.push({p:it.p,f:{p:it.p,t:it.t,b:b64(buf)}}); bytes+=buf.byteLength;
+      if(batch.length>=CFG.uploadBatchFiles||bytes>=CFG.uploadBatchBytes) await flush(false);
+    }
+    await flush(true);
+    S.meta.sentAt=new Date().toISOString(); await saveMeta();
+    st.textContent="Sent. Thank you, the organiser has your photos."; bar.style.width="100%"; btn.textContent="Send again"; btn.disabled=false;
+  }catch(e){
+    st.textContent="Stopped: "+(e.message||e)+(/access key/.test(String(e.message))?" Please message the organiser. Your photos are safe on this phone.":" Check your internet and tap the button again. Your photos are safe on this phone."); btn.disabled=false; btn.textContent="Try again";
+  }
+  SENDING=false;
+}
+async function buildPackage(){
   const rows=await DB.all("frames"); rows.sort((a,b)=>a[0]<b[0]?-1:1);
   const manifest={ tool:"signbridge-capture", version:2, signer:S.meta.code, sessionId:S.meta.sessionId, info:S.meta.info, createdAt:S.meta.createdAt, exportedAt:new Date().toISOString(), classOrder:S.meta.order.map(i=>clsById(i).name), video:S.meta.video, userAgent:navigator.userAgent, config:{ reps:CFG.reps, beepGapMs:CFG.beepGapMs, countdownSec:CFG.countdownSec, blurMin:CFG.blurMin, jpegQuality:CFG.jpegQuality }, rejects:S.meta.rejects, skipped:S.meta.skipped, frames:rows.map(([,v])=>v.meta) };
   const head=["file","class","rep","phase","timestamp","attempt","hands_detected","expected_hands","faces_detected","sharpness","luma","width","height"];
   const csv=[head.join(",")].concat(rows.map(([,v])=>{ const m=v.meta; return [m.file,m.cls,m.rep,m.phase,m.ts,m.attempt,m.hands,m.expectedHands,m.faces,m.sharp,m.luma,m.w,m.h].map(csvEscape).join(","); })).join("\n");
+  return {rows,manifest,csv};
+}
+async function buildZip(){
+  const {rows,manifest,csv}=await buildPackage();
   const files=[{name:`${S.meta.code}/manifest.json`, data:JSON.stringify(manifest,null,2)},{name:`${S.meta.code}/frames.csv`, data:csv}];
   rows.forEach(([k,v])=>files.push({name:k, data:v.blob}));
   return zip(files);
@@ -670,14 +735,14 @@ async function validateForm(){
   if(!$("#c-consent").checked) errs.push("Tick the consent box to continue.");
   if(top==="Not dark or not plain") errs.push("Please change into a plain solid dark top before capturing.");
   if(room==="Cluttered background") errs.push("Please move to a plain wall or hang a plain sheet behind you.");
-  return {code,phone,top,room,errs};
+  return {code,key,phone,top,room,errs};
 }
 async function startSession(){
   const f=await validateForm(); const e=$("#formErr");
   if(f.errs.length){ e.classList.remove("hidden"); e.innerHTML=f.errs.map(x=>"&bull; "+x).join("<br>"); return; }
   e.classList.add("hidden");
   const sid=(crypto.randomUUID?crypto.randomUUID():String(Math.random()).slice(2)).replace(/-/g,"").slice(0,8);
-  S.meta={ code:f.code, sessionId:sid, info:{phone:f.phone, top:f.top, room:f.room, consent:true, consentAt:new Date().toISOString(), ethicsRef:CFG.ethicsRef||null}, order:seededOrder(f.code), createdAt:new Date().toISOString(), video:{}, rejects:[], skipped:[], breakTaken:false };
+  S.meta={ code:f.code, accessKey:f.key, uploaded:[], sessionId:sid, info:{phone:f.phone, top:f.top, room:f.room, consent:true, consentAt:new Date().toISOString(), ethicsRef:CFG.ethicsRef||null}, order:seededOrder(f.code), createdAt:new Date().toISOString(), video:{}, rejects:[], skipped:[], breakTaken:false };
   await DB.clear("frames"); S.saved=new Set(); await saveMeta(); S.pos=0;
   await beginCameraSetup();
 }
@@ -718,9 +783,10 @@ async function boot(){
   $("#btnPractice").onclick=runPractice;
   $("#btnBreakDone").onclick=()=>renderClass();
   $("#btnZip").onclick=downloadZip;
+  $("#btnSend").onclick=sendToOrganiser;
   $("#btnClear").onclick=async()=>{ if(confirm("Delete all photos from this phone? Only do this after the organiser has confirmed the zip arrived.")){ await DB.clear("frames"); await DB.clear("meta"); S.meta=null; S.saved=new Set(); location.reload(); } };
   addEventListener("visibilitychange",()=>{ if(document.hidden) S.aborted=true; });
-  window.__S=S; window.__ready=true;
+  window.__S=S; if(MOCK){ window.__renderFinish=renderFinish; window.__CFG=CFG; } window.__ready=true;
 }
 const IMGS = Object.fromEntries(Object.entries(window.CHARTS).map(([k,v])=>[+k,"data:image/jpeg;base64,"+v]));
 boot();
