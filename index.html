@@ -56,6 +56,10 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
 .tag{display:inline-block;padding:3px 9px;border-radius:99px;font-size:.78rem;border:1px solid var(--line);color:var(--muted)}
 .tag.two{color:var(--warn);border-color:#e8cf9c;background:#fbf3e1}
 .tag.one{color:var(--accent);border-color:#ecc7b0;background:#fbeee6}
+.retakes{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.retake{font:inherit;font-size:.88rem;padding:7px 12px;border-radius:99px;border:1px solid #e0b676;background:#fff;color:#7a4a0a;cursor:pointer}
+.retake span{margin-left:6px;color:#a77430;font-weight:600}
+.retake:hover{background:#fdf1db}
 .tag.faceok{color:#2f6f50;border-color:#b9dccb;background:#e8f5ee;font-weight:600}
 .tag.faceno{color:#8a4b1a;border-color:#e8cf9c;background:#fbf3e1}
 .repinfo .ftag{display:block;margin-top:3px;font-size:.78rem;font-weight:600;color:#9be0bd}
@@ -194,6 +198,7 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
     <p class="note">Tap the button and keep this page open until it says sent. It can take a few minutes. If it stops, tap again and it carries on where it stopped.</p>
     <label class="note" for="sendMsg" style="display:block;margin-top:8px">Message for the organiser (optional)</label>
     <textarea id="sendMsg" rows="2" maxlength="400" style="width:100%;margin:4px 0 10px;padding:10px;border-radius:10px;border:1px solid var(--line);font:inherit"></textarea>
+    <div id="sendKeyWrap" class="hidden"><label class="note" for="sendKey" style="display:block;margin-top:4px">Please enter your 6-digit access key again</label><input type="text" id="sendKey" inputmode="numeric" maxlength="6" autocomplete="off" style="width:100%;margin:4px 0 10px;padding:10px;border-radius:10px;border:1px solid var(--line);font:inherit"></div>
     <div style="height:8px;background:var(--line);border-radius:99px;overflow:hidden"><div id="sendBar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div></div>
     <p class="note" id="sendStatus" style="margin:8px 0">Not sent yet.</p>
     <button class="btn primary" id="btnSend">Send to the organiser</button>
@@ -624,11 +629,17 @@ async function renderFinish(){
   const rej=S.meta.rejects.length, skip=S.meta.skipped.length;
   const perCls = CLASSES.map(c=>({c, k:rows.filter(([,v])=>v.meta.clsId===c.id).length}));
   const incomplete = perCls.filter(x=>x.k<CFG.reps*3);
-  $("#finStats").innerHTML=`<div><b>${n}</b><span>photos saved</span></div><div><b>${rej}</b><span>retakes needed</span></div><div><b>${skip}</b><span>repetitions skipped</span></div>`;
+  $("#finStats").innerHTML=`<div><b>${n}</b><span>photos saved</span></div><div><b>${rej}</b><span>failed attempts, retaken</span></div><div><b>${incomplete.length}</b><span>gestures still to retake</span></div>`;
   const w=$("#finWarn");
-  if(incomplete.length){ w.classList.remove("hidden"); w.textContent="Some gestures have fewer photos than expected: "+incomplete.map(x=>`${x.c.name} (${x.k}/${CFG.reps*3})`).join(", ")+"."; } else w.classList.add("hidden");
-  const hasUp=!!CFG.uploadUrl; $("#sendBox").classList.toggle("hidden",!hasUp);
-  if(hasUp){ $("#finLead").textContent="Please tap the send button below. If it does not work, download the zip instead and send it to the organiser by Google Drive or email. Avoid WhatsApp, because it compresses images."; if(S.meta.sentAt){ $("#sendStatus").textContent="Sent. Thank you, the organiser has your photos."; $("#sendBar").style.width="100%"; $("#btnSend").textContent="Send again"; } }
+  if(incomplete.length){
+    w.classList.remove("hidden");
+    w.innerHTML='<b>These gestures still need photos. Tap one to retake it.</b><div class="retakes">'+incomplete.map(x=>`<button class="retake" data-id="${x.c.id}">${x.c.name.replace(/_/g," ")} <span>${x.k}/${CFG.reps*3}</span></button>`).join("")+'</div>';
+    w.querySelectorAll(".retake").forEach(b=>{ b.onclick=()=>{ const id=+b.dataset.id; const i=S.meta.order.indexOf(id); if(i>=0){ S.pos=i; renderClass(); } }; });
+  } else w.classList.add("hidden");
+  const hasUp=!!CFG.uploadUrl; $("#sendBox").classList.toggle("hidden",!hasUp); $("#sendKeyWrap").classList.toggle("hidden", !(hasUp && !S.meta.accessKey));
+  if(hasUp){ $("#finLead").textContent="Please tap the send button below. If it does not work, download the zip instead and send it to the organiser by Google Drive or email. Avoid WhatsApp, because it compresses images."; const upl=new Set(S.meta.uploaded||[]); const unsent=rows.filter(([k])=>!upl.has(k)).length;
+    if(S.meta.sentAt && unsent===0){ $("#sendStatus").textContent="Sent. Thank you, the organiser has your photos."; $("#sendBar").style.width="100%"; $("#btnSend").textContent="Send again"; }
+    else if(S.meta.sentAt){ $("#sendStatus").textContent=unsent+" new photos have not been sent yet."; $("#sendBar").style.width="0"; $("#btnSend").textContent="Send the new photos"; } }
   $("#crumb").textContent=`Signer ${S.meta.code}`; show("finish");
 }
 
@@ -650,8 +661,16 @@ async function postChunk(payload){
 }
 let SENDING=false;
 async function sendToOrganiser(){
-  if(SENDING||!CFG.uploadUrl) return; SENDING=true;
-  const btn=$("#btnSend"), st=$("#sendStatus"), bar=$("#sendBar"); btn.disabled=true;
+  if(SENDING||!CFG.uploadUrl) return;
+  const btn=$("#btnSend"), st=$("#sendStatus"), bar=$("#sendBar");
+  if(!S.meta.accessKey){
+    const kw=$("#sendKeyWrap"); kw.classList.remove("hidden");
+    const v=($("#sendKey").value||"").trim();
+    const ok = /^\d{6}$/.test(v) && (window.ROSTER||{})[await sha16(`${v}:sb2`)]===S.meta.code;
+    if(!ok){ st.textContent = v ? "That key does not match this signer code. Please check your message." : "Enter your 6-digit access key above, then tap the button again."; return; }
+    S.meta.accessKey=v; await saveMeta(); kw.classList.add("hidden");
+  }
+  SENDING=true; btn.disabled=true;
   try{
     const {rows,manifest,csv}=await buildPackage(); const done=new Set(S.meta.uploaded||[]);
     const items=[{p:`${S.meta.code}/manifest.json`,t:"application/json",text:JSON.stringify(manifest,null,2)},{p:`${S.meta.code}/frames.csv`,t:"text/csv",text:csv}];
@@ -675,6 +694,7 @@ async function sendToOrganiser(){
     S.meta.sentAt=new Date().toISOString(); await saveMeta();
     st.textContent="Sent. Thank you, the organiser has your photos."; bar.style.width="100%"; btn.textContent="Send again"; btn.disabled=false;
   }catch(e){
+    if(/access key/.test(String(e.message))){ S.meta.accessKey=null; try{ await saveMeta(); }catch(_){} $("#sendKeyWrap").classList.remove("hidden"); }
     st.textContent="Stopped: "+(e.message||e)+(/access key/.test(String(e.message))?" Please message the organiser. Your photos are safe on this phone.":" Check your internet and tap the button again. Your photos are safe on this phone."); btn.disabled=false; btn.textContent="Try again";
   }
   SENDING=false;
