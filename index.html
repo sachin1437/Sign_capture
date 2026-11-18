@@ -264,7 +264,7 @@ const CFG = {
   lumaMin: 60, lumaMax: 205,
   maxAttempts: 3,
   uploadUrl: "https://script.google.com/macros/s/AKfycbykbDC4Mt3BMaNqu0BWx3iT_bHyelvNQ4jE4uHdfQgnkmo-2A5xhDPd66X-tIEMJi85ww/exec",                  // Google Apps Script web app URL (ends in /exec). Empty hides the send button.
-  uploadBatchFiles: 6, uploadBatchBytes: 1500000,
+  uploadBatchFiles: 6, uploadBatchBytes: 2000000, uploadParallel: 6,
   allowSkip: false,                 // false: a repetition cannot be skipped, the person must retake until all 3 photos pass
   breakAfter: 17,                // classes before the mid-session break
   requireHands: { start: false, peak: true, end: true },
@@ -649,6 +649,7 @@ async function postChunk(payload){
   let last="";
   for(let a=0;a<4;a++){
     try{
+      if(a>0) payload.retry=true;
       const r=await fetch(CFG.uploadUrl,{method:"POST",body:JSON.stringify(payload),redirect:"follow"});
       const j=await r.json();
       if(j&&j.ok) return j;
@@ -675,22 +676,38 @@ async function sendToOrganiser(){
     const {rows,manifest,csv}=await buildPackage(); const done=new Set(S.meta.uploaded||[]);
     const items=[{p:`${S.meta.code}/manifest.json`,t:"application/json",text:JSON.stringify(manifest,null,2)},{p:`${S.meta.code}/frames.csv`,t:"text/csv",text:csv}];
     rows.forEach(([k,v])=>items.push({p:k,t:"image/jpeg",blob:v.blob}));
+    items.forEach(it=>{ const parts=it.p.split("/"); it.name=parts[parts.length-1]; it.dir=parts.slice(1,-1).join("/"); it.size=it.blob?it.blob.size:it.text.length; });
     const total=items.length; const todo=items.filter(x=>!done.has(x.p));
-    bar.style.width=(100*(total-todo.length)/total)+"%"; st.textContent=`Sending... ${total-todo.length} of ${total} files`;
-    let batch=[], bytes=0, sent=total-todo.length;
-    const flush=async(final)=>{
-      const payload={k:S.meta.accessKey,code:S.meta.code,sid:S.meta.sessionId,files:batch.map(x=>x.f),final:!!final};
-      if(final){ payload.message=($("#sendMsg").value||"").slice(0,400); payload.phone=S.meta.info.phone; payload.expected=total; }
-      await postChunk(payload);
-      batch.forEach(x=>{ done.add(x.p); }); sent+=batch.length; S.meta.uploaded=[...done]; await saveMeta();
-      bar.style.width=(100*sent/total)+"%"; st.textContent=`Sending... ${sent} of ${total} files`; batch=[]; bytes=0;
+    const base={k:S.meta.accessKey,code:S.meta.code,sid:S.meta.sessionId};
+    bar.style.width=(100*(total-todo.length)/total)+"%"; st.textContent="Preparing the upload...";
+    const dirs=[...new Set(items.map(x=>x.dir).filter(Boolean))];
+    const init=await postChunk({...base,act:"init",dirs}); const sf=init.sf;
+    if(!sf) throw new Error("The upload server is out of date, so nothing was sent. Please tell the organiser.");
+    const batches=[]; let cur=[], bytes=0;
+    for(const it of todo){ cur.push(it); bytes+=it.size; if(cur.length>=CFG.uploadBatchFiles||bytes>=CFG.uploadBatchBytes){ batches.push(cur); cur=[]; bytes=0; } }
+    if(cur.length) batches.push(cur);
+    let sent=total-todo.length, next=0, failure=null; const t0=Date.now(), start=sent;
+    const show=()=>{
+      bar.style.width=(100*sent/total)+"%";
+      const n=sent-start; let eta="";
+      if(n>=CFG.uploadBatchFiles){ const left=(Date.now()-t0)/n*(total-sent)/1000; eta = left>75 ? ", about "+Math.ceil(left/60)+" min left" : ", under a minute left"; }
+      st.textContent=`Sending... ${sent} of ${total} files${eta}`;
     };
-    for(const it of todo){
-      const buf = it.blob ? await it.blob.arrayBuffer() : new TextEncoder().encode(it.text).buffer;
-      batch.push({p:it.p,f:{p:it.p,t:it.t,b:b64(buf)}}); bytes+=buf.byteLength;
-      if(batch.length>=CFG.uploadBatchFiles||bytes>=CFG.uploadBatchBytes) await flush(false);
-    }
-    await flush(true);
+    show();
+    const worker=async()=>{
+      while(!failure){
+        const i=next++; if(i>=batches.length) return; const bt=batches[i];
+        try{
+          const files=[];
+          for(const it of bt){ const buf=it.blob?await it.blob.arrayBuffer():new TextEncoder().encode(it.text).buffer; files.push({d:it.dir,n:it.name,t:it.t,b:b64(buf)}); }
+          await postChunk({...base,act:"put",sf,files});
+          bt.forEach(it=>done.add(it.p)); sent+=bt.length; S.meta.uploaded=[...done]; await saveMeta(); show();
+        }catch(e){ failure=e; }
+      }
+    };
+    await Promise.all(Array.from({length:CFG.uploadParallel},worker));
+    if(failure) throw failure;
+    await postChunk({...base,act:"final",sf,message:($("#sendMsg").value||"").slice(0,400),phone:S.meta.info.phone,expected:total});
     S.meta.sentAt=new Date().toISOString(); await saveMeta();
     st.textContent="Sent. Thank you, the organiser has your photos."; bar.style.width="100%"; btn.textContent="Send again"; btn.disabled=false;
   }catch(e){
